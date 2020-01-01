@@ -1,14 +1,14 @@
 namespace Saturn
 
-open Microsoft.AspNetCore.Builder
-open Microsoft.AspNetCore.Hosting
-open Microsoft.AspNetCore.ResponseCompression
+open System
 open Giraffe
 open Microsoft.AspNetCore
-open System
+open Microsoft.AspNetCore.Builder
+open Microsoft.AspNetCore.Hosting
+open System.Threading.Tasks
+open Microsoft.AspNetCore.ResponseCompression
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Logging
-open System.Threading.Tasks
 
 open Amazon.Lambda.Core
 open Amazon.Lambda.APIGatewayEvents
@@ -72,13 +72,6 @@ module AWSLambda =
         ||> Seq.fold (fun ab part -> part ab)
         |> ignore
       )
-
-    ///Defines top-level router used for the application
-    ///This construct is obsolete, use `use_router` instead
-    [<CustomOperation("router")>]
-    [<ObsoleteAttribute("This construct is obsolete, use use_router instead")>]
-    member __.RouterOld(state, handler) =
-      {state with Router = Some handler}
 
     ///Defines top-level router used for the application
     [<CustomOperation("use_router")>]
@@ -161,10 +154,13 @@ module AWSLambda =
   ///Runs AWS Lambda function/app
   let runLambdaApp (app: IWebHostBuilder) =
     //if SiteMap.isDebug then SiteMap.generate ()
+    match Environment.GetEnvironmentVariable("AWS_LAMBDA_FUNCTION_NAME") |> String.IsNullOrEmpty with
+    | false -> 
+      let lambdaEntry = new LambdaEntryPoint()
+      let functionHandler = Func<APIGatewayProxyRequest, ILambdaContext, Task<APIGatewayProxyResponse>>(fun request context -> lambdaEntry.FunctionHandlerAsync(request, context))
+      use handlerWrapper = HandlerWrapper.GetHandlerWrapper<APIGatewayProxyRequest, Task<APIGatewayProxyResponse>>(functionHandler, new JsonSerializer())
+      use bootstrap = new LambdaBootstrap(handlerWrapper)
 
-    let lambdaEntry = new LambdaEntryPoint()
-    let functionHandler = Func<APIGatewayProxyRequest, ILambdaContext, Task<APIGatewayProxyResponse>>(fun request context -> lambdaEntry.FunctionHandlerAsync(request, context))
-    use handlerWrapper = HandlerWrapper.GetHandlerWrapper<APIGatewayProxyRequest, Task<APIGatewayProxyResponse>>(functionHandler, new JsonSerializer())
-    use bootstrap = new LambdaBootstrap(handlerWrapper)
-
-    bootstrap.RunAsync() |> Async.AwaitTask |> ignore
+      bootstrap.RunAsync() |> Async.AwaitTask |> ignore
+    | true ->
+      app.Build().Run()
