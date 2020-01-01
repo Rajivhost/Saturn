@@ -15,7 +15,7 @@ module Common =
   | Some of 'T
   | All
 
-  let inline internal succeed nxt cntx  = nxt cntx
+  let inline succeed nxt cntx  = nxt cntx
   let internal abort : HttpFuncResult = System.Threading.Tasks.Task.FromResult None
 
   let inline internal halt ctx = task { return Some ctx }

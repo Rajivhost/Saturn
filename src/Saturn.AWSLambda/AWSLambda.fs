@@ -1,134 +1,170 @@
 namespace Saturn
 
-open Saturn
+open Microsoft.AspNetCore.Builder
+open Microsoft.AspNetCore.Hosting
+open Microsoft.AspNetCore.ResponseCompression
 open Giraffe
-open FSharp.Control.Tasks.V2.ContextInsensitive
+open Microsoft.AspNetCore
 open System
-open Microsoft.AspNetCore.Http
-open System.Threading.Tasks
+open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Logging
-open Giraffe.Serialization.Json
-open Giraffe.Serialization.Xml
-open Microsoft.AspNetCore.Mvc
+open System.Threading.Tasks
 
+open Amazon.Lambda.Core
+open Amazon.Lambda.APIGatewayEvents
+open Amazon.Lambda.RuntimeSupport
+open Amazon.Lambda.Serialization.Json
+
+[<AutoOpen>]
 module AWSLambda =
 
-  type FunctionState = {
-    Logger: ILogger option
-    Router: HttpHandler option
-    ErrorHandler: (System.Exception -> HttpHandler)
-    NotFoundHandler: HttpHandler
-    HostPrefix: string
-    JsonSerializer: IJsonSerializer
-    XmlSerializer: IXmlSerializer
-    NegotiationConfig: INegotiationConfig
-  }
-
-  type FunctionBuilder internal () =
-    let mvcNoopResult =
-      { new IActionResult with
-          member __.ExecuteResultAsync(_) = Task.CompletedTask
-      }
-
-    member val LogWriter : ILogger option = None with get,set
-
+  type LambdaApplicationBuilder internal () =
     member __.Yield(_) =
-        let errorHandler (ex : Exception) =
-            __.LogWriter |> Option.iter (fun logger -> logger.LogError("An unhandled exception has occurred while executing the request.", ex))
-            clearResponse >=> Giraffe.HttpStatusCodeHandlers.ServerErrors.INTERNAL_ERROR ex.Message
+      let errorHandler (ex : Exception) (logger : ILogger) =
+        logger.LogError(EventId(), ex, "An unhandled exception has occurred while executing the request.")
+        clearResponse >=> Giraffe.HttpStatusCodeHandlers.ServerErrors.INTERNAL_ERROR ex.Message
+      {Router = None; ErrorHandler = Some errorHandler; Pipelines = []; Urls = []; MimeTypes = []; AppConfigs = []; HostConfigs = []; ServicesConfig = []; CliArguments = None; CookiesAlreadyAdded = false; NoRouter = false; Channels = [] }
 
-        let notFoundHandler =
-            clearResponse >=> Giraffe.HttpStatusCodeHandlers.RequestErrors.NOT_FOUND "Not found"
-        {Logger = None; Router = None; ErrorHandler = errorHandler; NotFoundHandler = notFoundHandler; HostPrefix = "/api"; JsonSerializer = NewtonsoftJsonSerializer(NewtonsoftJsonSerializer.DefaultSettings); XmlSerializer = DefaultXmlSerializer(DefaultXmlSerializer.DefaultSettings);  NegotiationConfig = DefaultNegotiationConfig() }
+    member __.Run(state: ApplicationState) : IWebHostBuilder =
+      /// to build the app we have to separate our configurations and our pipelines.
+      /// we can only call `Configure` once, so we have to apply our pipelines in the end
+      let router =
+        match state.Router with
+        | None ->
+          if not state.NoRouter then printfn "Router needs to be defined in Saturn application. If you're building channels-only application, or gRPC application you may disable this message with `no_router` flag in your `application` block"
+          None
+        | Some router ->
+          Some ((succeed |> List.foldBack (fun e acc -> acc >=> e) state.Pipelines) >=> router)
 
-    member __.Run(state: FunctionState) : (HttpRequest -> Task<IActionResult>) =
-      let wrapGiraffeServices (existing:IServiceProvider) =
-        { new IServiceProvider with
-            member __.GetService(t:Type) =
-              if (t = typeof<IJsonSerializer>) then upcast state.JsonSerializer
-              elif (t = typeof<IXmlSerializer>) then upcast state.XmlSerializer
-              elif (t = typeof<INegotiationConfig>) then upcast state.NegotiationConfig
-              else existing.GetService(t)
-        }
+      // as we want to add middleware to our pipeline, we can add it here and we'll fold across it in the end
+      let useParts = ResizeArray<IApplicationBuilder -> IApplicationBuilder>()
 
-      let next : HttpContext -> Task<HttpContext option> = Some >> Task.FromResult
-      fun req ->
-        req.HttpContext.RequestServices <- wrapGiraffeServices req.HttpContext.RequestServices
-        let r =
-          match state.Router with
-          | Some r -> r
-          | None -> failwith "Router needs to be defined"
-        let r = router {
-          pipe_through (fun nxt ctx -> state.Logger |> Option.iter (fun log -> ctx.Items.["Logger"] <- log); nxt ctx)
-          forward state.HostPrefix r
-        }
-        task {
-          try
-            let! result = r next req.HttpContext
-            match result with
-            | None ->
-              let! errorResult = state.NotFoundHandler next req.HttpContext
-              match errorResult with
-              | None -> return failwith "Internal error"
-              | Some _ -> return mvcNoopResult
-            | Some _ -> return mvcNoopResult
-          with
-          | ex ->
-            let! errorResult = state.ErrorHandler ex next req.HttpContext
-            match errorResult with
-            | None -> return failwith "Internal error"
-            | Some _ -> return mvcNoopResult
-        }
-    ///Defines top-level router used for the function
-    [<CustomOperation("use_router")>]
-    member __.Router(state : FunctionState, handler) =
+      let wbhst =
+        // Explicit null removes unnecessary handlers.
+        WebHost.CreateDefaultBuilder(Option.toObj state.CliArguments)
+        |> List.foldBack (fun e acc -> e acc ) state.HostConfigs
+
+      wbhst.ConfigureServices(fun svcs ->
+        let services = svcs.AddGiraffe()
+        state.ServicesConfig |> List.rev |> List.iter (fun fn -> fn services |> ignore) |> ignore)
+      |> ignore // need giraffe (with user customizations) in place so that I can get an IJsonSerializer for the channels
+
+      /// error handler first so that errors are caught
+      match state.ErrorHandler with
+      | Some err -> useParts.Add (fun app -> app.UseGiraffeErrorHandler(err))
+      | None -> ()
+
+      /// user-provided middleware
+      state.AppConfigs |> List.iter (useParts.Add)
+
+      /// finally Giraffe itself
+      match router with
+      | None -> ()
+      | Some router -> useParts.Add (fun app -> app.UseGiraffe router; app)
+
+      let wbhst =
+        if not (state.Urls |> List.isEmpty) then
+          wbhst.UseUrls(state.Urls |> List.toArray)
+        else wbhst
+
+      wbhst.Configure(fun ab ->
+        (ab, useParts)
+        ||> Seq.fold (fun ab part -> part ab)
+        |> ignore
+      )
+
+    ///Defines top-level router used for the application
+    ///This construct is obsolete, use `use_router` instead
+    [<CustomOperation("router")>]
+    [<ObsoleteAttribute("This construct is obsolete, use use_router instead")>]
+    member __.RouterOld(state, handler) =
       {state with Router = Some handler}
 
-    ///Adds error handler for the function
+    ///Defines top-level router used for the application
+    [<CustomOperation("use_router")>]
+    member __.Router(state, handler) =
+      {state with Router = Some handler}
+
+    ///Disable warning message about lack of `router` definition. Should be used for channels-only or gRPC applications.
+    [<CustomOperation("no_router")>]
+    member __.NoRouter(state) =
+      {state with NoRouter = true}
+
+    ///Adds pipeline to the list of pipelines that will be used for every request
+    [<CustomOperation("pipe_through")>]
+    member __.PipeThrough(state : ApplicationState, pipe) =
+      {state with Pipelines = pipe::state.Pipelines}
+
+    ///Adds error/not-found handler for current scope
     [<CustomOperation("error_handler")>]
-    member __.ErrorHandler(state : FunctionState, handler) =
-      {state with ErrorHandler = handler}
+    member __.ErrorHandler(state : ApplicationState, handler) =
+      {state with ErrorHandler = Some handler}
 
-    ///Adds not found handler for the function
-    [<CustomOperation("not_found_handler")>]
-    member __.NotFoundHandler(state : FunctionState, handler) =
-      {state with NotFoundHandler = handler}
+    ///Adds custom application configuration step.
+    [<CustomOperation("app_config")>]
+    member __.AppConfig(state, config) =
+      {state with AppConfigs = config::state.AppConfigs}
 
-    ///Adds logger for the function. Used for error reporting and passed to the actions as `ctx.Items.["TraceWriter"]`
-    [<CustomOperation("logger")>]
-    member __.Logger(state : FunctionState, logger) =
-      __.LogWriter <- Some logger
-      {state with Logger = Some logger}
+    ///Adds custom host configuration step.
+    [<CustomOperation("host_config")>]
+    member __.HostConfig(state, config) =
+      {state with HostConfigs = config::state.HostConfigs}
 
-    ///Adds prefix for the endpoint. By default Azure Functions are using `/api` prefix.
-    [<CustomOperation("host_prefix")>]
-    member __.HostPrefix(state : FunctionState, prefix) =
-      {state with HostPrefix = prefix}
+    ///Adds custom service configuration step.
+    [<CustomOperation("service_config")>]
+    member __.ServiceConfig(state, config) =
+      {state with ServicesConfig = config::state.ServicesConfig}
 
-        ///Configures built in JSON.Net (de)serializer with custom settings.
-    [<CustomOperation("use_json_settings")>]
-    member __.ConfigJSONSerializer (state, settings) =
-      { state with JsonSerializer = NewtonsoftJsonSerializer settings }
-
-    ///Replaces built in JSON.Net (de)serializer with custom serializer
-    [<CustomOperation("use_json_serializer")>]
-    member __.UseCustomJSONSerializer (state, serializer : #Giraffe.Serialization.Json.IJsonSerializer ) =
-      { state with JsonSerializer = serializer }
-
-    ///Configures built in XML (de)serializer with custom settings.
-    [<CustomOperation("use_xml_settings")>]
-    member __.ConfigXMLSerializer (state, settings) =
-      { state with XmlSerializer = DefaultXmlSerializer settings }
-
-    ///Replaces built in XML (de)serializer with custom serializer
-    [<CustomOperation("use_xml_serializer")>]
-    member __.UseCustomXMLSerializer (state, serializer : #Giraffe.Serialization.Xml.IXmlSerializer ) =
-      { state with XmlSerializer = serializer }
-
-    ///Configures negotiation config
-    [<CustomOperation("use_negotiation_config")>]
-    member __.UseConfigNegotiation (state, config) =
-      { state with NegotiationConfig = config }
+    ///Adds MIME types definitions as a list of (extension, mime)
+    [<CustomOperation("use_mime_types")>]
+    member __.AddMimeTypes(state, mimeList) =
+      {state with MimeTypes = mimeList}
 
 
-  let lambdaFunction = FunctionBuilder()
+    ///Adds logging configuration.
+    [<CustomOperation("logging")>]
+    member __.Logging(state, (config : ILoggingBuilder -> unit)) =
+      {state with HostConfigs = (fun (app : IWebHostBuilder)-> app.ConfigureLogging(config))::state.HostConfigs}
+
+    ///Enables in-memory session cache
+    [<CustomOperation("memory_cache")>]
+    member __.MemoryCache(state) =
+      let service (s : IServiceCollection) = s.AddDistributedMemoryCache()
+      let serviceSet (s : IServiceCollection) = s.AddSession()
+
+      { state with
+          ServicesConfig = serviceSet::(service::state.ServicesConfig)
+          AppConfigs = (fun (app : IApplicationBuilder)-> app.UseSession())::state.AppConfigs
+      }
+
+    ///Enables gzip compression
+    [<CustomOperation("use_gzip")>]
+    member __.UseGZip(state : ApplicationState) =
+      let service (s : IServiceCollection) =
+        s.Configure<GzipCompressionProviderOptions>(fun (opts : GzipCompressionProviderOptions) -> opts.Level <- System.IO.Compression.CompressionLevel.Optimal)
+         .AddResponseCompression()
+      let middleware (app : IApplicationBuilder) = app.UseResponseCompression()
+
+      { state with
+          ServicesConfig = service::state.ServicesConfig
+          AppConfigs = middleware::state.AppConfigs
+      }
+
+  ///Computation expression used to configure AWS Lambda application
+  let lambdaApplication = LambdaApplicationBuilder()
+
+  type LambdaEntryPoint() =
+    inherit Amazon.Lambda.AspNetCoreServer.APIGatewayProxyFunction()
+
+    override _.Init(_ : IWebHostBuilder) = ()
+
+  ///Runs AWS Lambda function/app
+  let runLambdaApp (app: IWebHostBuilder) =
+    //if SiteMap.isDebug then SiteMap.generate ()
+
+    let lambdaEntry = new LambdaEntryPoint()
+    let functionHandler = Func<APIGatewayProxyRequest, ILambdaContext, Task<APIGatewayProxyResponse>>(fun request context -> lambdaEntry.FunctionHandlerAsync(request, context))
+    use handlerWrapper = HandlerWrapper.GetHandlerWrapper<APIGatewayProxyRequest, Task<APIGatewayProxyResponse>>(functionHandler, new JsonSerializer())
+    use bootstrap = new LambdaBootstrap(handlerWrapper)
+
+    bootstrap.RunAsync() |> Async.AwaitTask |> ignore
