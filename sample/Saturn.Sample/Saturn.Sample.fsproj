@@ -8,6 +8,7 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Saturn.AWSLambda\Saturn.AWSLambda.fsproj" />
     <ProjectReference Include="..\..\src\Saturn\Saturn.fsproj">
       <Name>Saturn.fsproj</Name>
     </ProjectReference>

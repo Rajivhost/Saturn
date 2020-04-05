@@ -2,6 +2,7 @@ module Sample
 
 open Saturn
 open Giraffe
+open Saturn.AWSLambda
 
 //Saturn is using standard HttpHandlers from Giraffe
 
@@ -137,18 +138,14 @@ let topRouter = router {
 // It also enables defining common set of Pipelines that will be executed for every request, before dispatching to router
 
 
-let app = application {
-    pipe_through endpointPipe
-
+let app = lambdaApplication {
     use_router topRouter
-    url "http://0.0.0.0:8085/"
     memory_cache
-    use_static "static"
     use_gzip
 }
 
 [<EntryPoint>]
 let main _ =
-    run app
+    runLambdaApp app
     0 // return an integer exit code
 

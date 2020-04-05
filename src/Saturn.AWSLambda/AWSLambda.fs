@@ -108,11 +108,15 @@ module AWSLambda =
     member __.ServiceConfig(state, config) =
       {state with ServicesConfig = config::state.ServicesConfig}
 
+    ///Adds url
+    [<CustomOperation("url")>]
+    member __.Url(state, url) =
+      {state with Urls = url::state.Urls}
+
     ///Adds MIME types definitions as a list of (extension, mime)
     [<CustomOperation("use_mime_types")>]
     member __.AddMimeTypes(state, mimeList) =
       {state with MimeTypes = mimeList}
-
 
     ///Adds logging configuration.
     [<CustomOperation("logging")>]
@@ -143,24 +147,36 @@ module AWSLambda =
           AppConfigs = middleware::state.AppConfigs
       }
 
+    ///Enables IIS integration
+    [<CustomOperation("use_iis")>]
+    member __.UseIIS(state) =
+      let host (builder: IWebHostBuilder) =
+        builder.UseIISIntegration()
+      { state with
+          HostConfigs = host::state.HostConfigs
+      }
+
   ///Computation expression used to configure AWS Lambda application
   let lambdaApplication = LambdaApplicationBuilder()
 
-  type LambdaEntryPoint() =
+  type LambdaEntryPoint (builder: IWebHostBuilder) =
     inherit Amazon.Lambda.AspNetCoreServer.APIGatewayProxyFunction()
 
-    override _.Init(_ : IWebHostBuilder) = ()
+    override _.Init(_ : IWebHostBuilder) =
+      builder.Build() |> ignore
+
+      ()
 
   ///Runs AWS Lambda function/app
-  let runLambdaApp (app: IWebHostBuilder) =
+  let runLambdaApp (builder: IWebHostBuilder) =
     //if SiteMap.isDebug then SiteMap.generate ()
     match Environment.GetEnvironmentVariable("AWS_LAMBDA_FUNCTION_NAME") |> String.IsNullOrEmpty with
     | false -> 
-      let lambdaEntry = new LambdaEntryPoint()
+      let lambdaEntry = new LambdaEntryPoint(builder)
       let functionHandler = Func<APIGatewayProxyRequest, ILambdaContext, Task<APIGatewayProxyResponse>>(fun request context -> lambdaEntry.FunctionHandlerAsync(request, context))
       use handlerWrapper = HandlerWrapper.GetHandlerWrapper<APIGatewayProxyRequest, Task<APIGatewayProxyResponse>>(functionHandler, new JsonSerializer())
       use bootstrap = new LambdaBootstrap(handlerWrapper)
 
       bootstrap.RunAsync() |> Async.AwaitTask |> ignore
     | true ->
-      app.Build().Run()
+      builder.Build().Run()
