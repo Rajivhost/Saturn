@@ -1,3 +1,11 @@
+### 0.12.1 - 18.02.2020
+* Add support for AzureAD OAuth (by [@ChrSteinert](https://github.com/ChrSteinert)))
+
+### 0.12.0 - 18.02.2020
+* bump TFM to netcoreapp3.1 (by [@baronfel](https://github.com/baronfel))
+* fully-qualify applicationbuilder type to use the saturn type instead of aspnetcore (by [@baronfel](https://github.com/baronfel))
+* Fixed naming collision in Auth extensions (by [@rusanov-vladimir](https://github.com/rusanov-vladimir) )
+
 ### 0.10.1 - 25.11.2019
 * Update Giraffe to 4.0.1 (by [@mastoj](https://github.com/mastoj))
 

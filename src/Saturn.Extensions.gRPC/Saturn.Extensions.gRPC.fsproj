@@ -1,9 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Library</OutputType>
-    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
     <DebugType>portable</DebugType>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>GRPC support for Saturn</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Saturn\Saturn.fsproj">
@@ -12,6 +13,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Saturn.gRPC.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>

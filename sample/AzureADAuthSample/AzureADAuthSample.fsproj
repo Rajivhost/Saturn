@@ -6,9 +6,11 @@
     <DebugType>portable</DebugType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="AzureADAuthSample.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Saturn.Extensions.Authorization\Saturn.Extensions.Authorization.fsproj" />
     <ProjectReference Include="..\..\src\Saturn\Saturn.fsproj" />
-    <ProjectReference Include="..\..\src\Saturn.Extensions.HttpSys\Saturn.Extensions.HttpSys.fsproj" />
-    <Compile Include="WindowsAuthSample.fs" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>
